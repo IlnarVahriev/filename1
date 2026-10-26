@@ -1,0 +1,15 @@
+{% extends 'base.html' %}{% block content %}
+<h2>Админ-панель</h2>
+<table border="1">
+<tr><th>ID</th><th>Логин</th><th>Роль</th><th>Email</th><th>Секрет</th></tr>
+{% for u in users %}
+<tr>
+  <td>{{ u['id'] }}</td>
+  <td>{{ u['login']|safe }}</td>
+  <td>{{ u['role'] }}</td>
+  <td>{{ u['email']|safe }}</td>
+  <td>{{ u['secret_note'] }}</td>
+</tr>
+{% endfor %}
+</table>
+{% endblock %}

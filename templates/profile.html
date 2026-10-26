@@ -1,0 +1,10 @@
+{% extends 'base.html' %}{% block content %}
+<h2>Профиль</h2>
+<p>ID: {{ user['id'] }}</p>
+<p>Логин: {{ user['login']|safe }}</p>
+<p>Email: {{ user['email']|safe }}</p>
+<p>Роль: {{ user['role'] }}</p>
+{% if not public %}
+<p>Секрет: {{ user['secret_note'] }}</p>
+{% endif %}
+{% endblock %}
