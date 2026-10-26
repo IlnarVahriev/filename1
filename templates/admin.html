@@ -5,9 +5,9 @@
 {% for u in users %}
 <tr>
   <td>{{ u['id'] }}</td>
-  <td>{{ u['login']|safe }}</td>
+  <td>{{ u['login'] }}</td>
   <td>{{ u['role'] }}</td>
-  <td>{{ u['email']|safe }}</td>
+  <td>{{ u['email']}}</td>
   <td>{{ u['secret_note'] }}</td>
 </tr>
 {% endfor %}

@@ -1,10 +1,20 @@
-from flask import Flask, request, render_template, redirect, session
-import sqlite3, os, hashlib
+from flask import Flask, request, render_template, redirect, session, abort
+from functools import wraps
+from werkzeug.security import generate_password_hash, check_password_hash
+import sqlite3, os, re
 
 app = Flask(__name__)
-app.secret_key = 'super_secret_key_123'
+
+app.secret_key = os.environ.get("SECRET_KEY") or os.urandom(32).hex()
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,    
+    SESSION_COOKIE_SAMESITE='Lax',   
+    SESSION_COOKIE_SECURE=bool(os.environ.get("HTTPS")),  
+)
 
 DB = 'app.db'
+LOGIN_RE = re.compile(r'^[A-Za-z0-9_]{3,32}$')    
+PWD_MIN = 8
 
 def db():
     conn = sqlite3.connect(DB)
@@ -19,52 +29,78 @@ def current_user():
     conn.close()
     return u
 
+def admin_required(f):
+    """Уязв. №6: серверная проверка роли, а не скрытие кнопки."""
+    @wraps(f)
+    def wrapper(*a, **kw):
+        u = current_user()
+        if not u:
+            return redirect('/login')
+        if u['role'] != 'admin':
+            abort(403)
+        return f(*a, **kw)
+    return wrapper
+
+@app.after_request
+def security_headers(resp):
+    resp.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self'"
+    resp.headers['X-Content-Type-Options'] = 'nosniff'
+    resp.headers['X-Frame-Options'] = 'DENY'
+    resp.headers['Referrer-Policy'] = 'no-referrer'
+    return resp
+
 @app.route('/')
 def index():
     return redirect('/login')
 
-@app.route('/login', methods=['GET','POST'])
+@app.route('/login', methods=['GET', 'POST'])
 def login():
     error = None
     if request.method == 'POST':
-        login = request.form['login']
-        password = request.form['password']
-        query = "SELECT * FROM users WHERE login='%s' AND password='%s'" % (
-            login, hashlib.md5(password.encode()).hexdigest()
-        )
+        login = request.form.get('login', '')
+        password = request.form.get('password', '')
         conn = db()
-        try:
-            user = conn.execute(query).fetchone()
-        except Exception as e:
-            user = None
-            error = f"SQL error: {e}"
+        user = conn.execute("SELECT * FROM users WHERE login=?", (login,)).fetchone()
         conn.close()
-        if user:
+        if user and check_password_hash(user['password'], password):
+            session.clear()
             session['user_id'] = user['id']
             session['login'] = user['login']
             return redirect('/profile')
-        if not error:
-            error = 'Неверный логин или пароль'
+        error = 'Неверный логин или пароль'  
     return render_template('login.html', error=error)
 
-@app.route('/register', methods=['GET','POST'])
+@app.route('/register', methods=['GET', 'POST'])
 def register():
     error = None
     if request.method == 'POST':
-        login = request.form['login']
-        password = request.form['password']
-        email = request.form['email']
-        conn = db()
-        try:
-            pwd = hashlib.md5(password.encode()).hexdigest()
-            conn.execute("INSERT INTO users (login,password,email) VALUES (?,?,?)",
-                         (login, pwd, email))
-            conn.commit()
-            return redirect('/login')
-        except Exception as e:
-            error = str(e)
-        finally:
-            conn.close()
+        login = request.form.get('login', '')
+        password = request.form.get('password', '')
+        email = request.form.get('email', '')
+
+       
+        if not LOGIN_RE.match(login):
+            error = 'Логин: 3–32 символа, латиница, цифры, _'
+        elif len(password) < PWD_MIN:
+            error = f'Пароль не короче {PWD_MIN} символов'
+        elif '@' not in email or len(email) > 254:
+            error = 'Некорректный email'
+        else:
+            conn = db()
+            try:
+                conn.execute(
+                    "INSERT INTO users (login,password,email) VALUES (?,?,?)",
+                    (login, generate_password_hash(password), email)
+                )
+                conn.commit()
+                return redirect('/login')
+            except sqlite3.IntegrityError:
+                error = 'Логин уже занят'   
+            except Exception:
+                app.logger.exception("register failed")
+                error = 'Ошибка регистрации'
+            finally:
+                conn.close()
     return render_template('register.html', error=error)
 
 @app.route('/logout')
@@ -81,24 +117,27 @@ def profile():
 
 @app.route('/user/<int:uid>')
 def user_view(uid):
-    if 'user_id' not in session:
+    me = current_user()
+    if not me:
         return redirect('/login')
+    if uid != me['id'] and me['role'] != 'admin':
+        abort(403)
     conn = db()
-    u = conn.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+    u = conn.execute("SELECT id,login,role FROM users WHERE id=?", (uid,)).fetchone()
     conn.close()
     if not u:
-        return "Not found", 404
+        abort(404)
     return render_template('profile.html', user=u, public=True)
 
-@app.route('/notes', methods=['GET','POST'])
+@app.route('/notes', methods=['GET', 'POST'])
 def notes():
     u = current_user()
     if not u:
         return redirect('/login')
     conn = db()
     if request.method == 'POST':
-        title = request.form['title']
-        content = request.form['content']
+        title = request.form.get('title', '')[:200]
+        content = request.form.get('content', '')[:5000]
         conn.execute("INSERT INTO notes (user_id,title,content) VALUES (?,?,?)",
                      (u['id'], title, content))
         conn.commit()
@@ -107,23 +146,13 @@ def notes():
     return render_template('notes.html', notes=rows)
 
 @app.route('/admin')
+@admin_required          
 def admin():
-    if 'user_id' not in session:
-        return redirect('/login')
     conn = db()
     users = conn.execute("SELECT id,login,role,email,secret_note FROM users").fetchall()
     conn.close()
     return render_template('admin.html', users=users)
 
-@app.route('/debug')
-def debug():
-    u = current_user()
-    return {
-        'secret_key': app.secret_key,
-        'session': dict(session),
-        'user': dict(u) if u else None,
-        'env': dict(os.environ)
-    }
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    app.run(debug=False, host='127.0.0.1', port=5000)

@@ -7,7 +7,7 @@
 </form>
 <hr>
 {% for n in notes %}
-  <h3>{{ n['title']|safe }}</h3>
-  <div>{{ n['content']|safe }}</div>
+  <h3>{{ n['title'] }}</h3>
+  <div>{{ n['content'] }}</div>
 {% endfor %}
 {% endblock %}
